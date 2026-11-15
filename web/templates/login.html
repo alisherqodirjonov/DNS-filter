@@ -1,0 +1,35 @@
+{{define "login"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · DNS Filter</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-intro">
+      <p class="mark">DNS Filter</p>
+      <h1>Protective DNS for the lab.</h1>
+      <p>Queries from the test network come here first. Names on a rule or a threat feed are refused. Everything else is forwarded upstream and written to the log.</p>
+      <p>This console is for the people running the filter.</p>
+    </section>
+    <section class="login-panel">
+      <h2>Sign in</h2>
+      <form id="login-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="form-error" hidden></p>
+        <button type="submit">Sign in</button>
+      </form>
+      <noscript><p>This console needs JavaScript. The script is served by this filter.</p></noscript>
+    </section>
+  </main>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
+{{end}}

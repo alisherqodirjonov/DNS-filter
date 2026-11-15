@@ -1,0 +1,6 @@
+# Synthetic names for the lab demonstration.
+# These use the reserved .test TLD. They are not real hosts.
+
+malware-demo.test
+phishing-demo.test
+c2-demo.test

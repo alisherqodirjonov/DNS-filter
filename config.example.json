@@ -1,0 +1,28 @@
+{
+  "dns": {
+    "listen_udp": "127.0.0.1:5353",
+    "listen_tcp": "127.0.0.1:5353",
+    "upstream": "1.1.1.1:53",
+    "upstream_timeout_seconds": 3,
+    "blocked_rcode": "REFUSED"
+  },
+  "http": {
+    "listen": "127.0.0.1:8080"
+  },
+  "database": {
+    "path": "./data/dnsfilter.db"
+  },
+  "logging": {
+    "retention_days": 7
+  },
+  "feeds": {
+    "sync_interval_hours": 24,
+    "sources": [
+      {
+        "name": "demo-local",
+        "path": "./testdata/demo-blocklist.txt",
+        "format": "domains"
+      }
+    ]
+  }
+}
