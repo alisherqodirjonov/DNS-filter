@@ -3,11 +3,14 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"dnsfilter/internal/auth"
@@ -16,8 +19,8 @@ import (
 	"dnsfilter/internal/feeds"
 	"dnsfilter/internal/httpapi"
 	"dnsfilter/internal/policy"
+	"dnsfilter/internal/settings"
 	"dnsfilter/internal/store"
-	"dnsfilter/internal/upstream"
 )
 
 // Run opens the database, starts the DNS listeners, and blocks until ctx is cancelled.
@@ -57,6 +60,20 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	live, err := settings.Load(ctx, st, settings.Defaults(cfg))
+	if err != nil {
+		return err
+	}
+	current := live.Current()
+	if saved := live.Saved(); len(saved) > 0 {
+		logger.Info("console settings in effect",
+			"blocked_rcode", current.BlockedRCode,
+			"upstream", current.Upstream,
+			"log_mode", current.LogMode,
+			"feeds_from", current.FeedsSource,
+		)
+	}
+
 	engine := policy.NewEngine()
 	if err := reload(ctx, st, engine); err != nil {
 		return err
@@ -69,30 +86,37 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 			return reload(ctx, st, engine)
 		},
 	}
-	if err := feedSvc.Reconcile(ctx); err != nil {
-		return err
+	if current.FeedsSource == settings.FeedsFromFile {
+		if err := feedSvc.Reconcile(ctx); err != nil {
+			return err
+		}
+	} else {
+		logger.Info("feed list is managed in the console; feeds in the config file are not applied")
 	}
 	feedSvc.SyncAll(ctx)
 	workers.Add(2)
 	go func() {
 		defer workers.Done()
-		feeds.Schedule(runCtx, cfg.Feeds.SyncInterval, func(ctx context.Context) {
-			feedSvc.SyncAll(ctx)
-		})
+		feeds.Schedule(runCtx,
+			func() time.Duration { return live.Current().SyncInterval },
+			live.Changed,
+			feedSvc.SyncAll)
 	}()
 	go func() {
 		defer workers.Done()
-		retainEvents(runCtx, st, cfg.Logging.Retention, logger)
+		retainEvents(runCtx, st, live, logger)
 	}()
 
 	dnsSrv, err := dnsserver.Listen(dnsserver.Options{
-		ListenUDP:    cfg.DNS.ListenUDP,
-		ListenTCP:    cfg.DNS.ListenTCP,
-		Engine:       engine,
-		Upstream:     &upstream.Client{Addr: cfg.DNS.Upstream, Timeout: cfg.DNS.UpstreamTimeout},
-		BlockedRCode: cfg.DNS.BlockedRCode,
-		Record:       recordToStore(st),
-		Logger:       logger,
+		ListenUDP: cfg.DNS.ListenUDP,
+		ListenTCP: cfg.DNS.ListenTCP,
+		Engine:    engine,
+		Settings: func() dnsserver.Live {
+			v := live.Current()
+			return dnsserver.Live{BlockedRCode: v.BlockedRCode, Upstream: v.Upstream, UpstreamTimeout: v.UpstreamTimeout}
+		},
+		Record: recordToStore(st, live),
+		Logger: logger,
 	})
 	if err != nil {
 		return err
@@ -101,15 +125,19 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	logger.Info("dns listening", "udp", dnsSrv.UDPAddr().String(), "tcp", dnsSrv.TCPAddr().String())
 
 	api := &httpapi.API{
-		Store:  st,
-		Auth:   accounts,
-		Feeds:  feedSvc,
-		Engine: engine,
-		Logger: logger,
-		Reload: func(ctx context.Context) error { return reload(ctx, st, engine) },
+		Store:    st,
+		Auth:     accounts,
+		Feeds:    feedSvc,
+		Settings: live,
+		Engine:   engine,
+		Logger:   logger,
+		Reload:   func(ctx context.Context) error { return reload(ctx, st, engine) },
 	}
 	httpLn, err := net.Listen("tcp", cfg.HTTP.Listen)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("%w. Another program, or another copy of dnsfilter, already uses this port: set http.listen in config.json to a free one", err)
+		}
 		return err
 	}
 	httpSrv := &http.Server{
@@ -185,7 +213,10 @@ func reload(ctx context.Context, st *store.Store, engine *policy.Engine) error {
 	return nil
 }
 
-func retainEvents(ctx context.Context, st *store.Store, retention time.Duration, logger *slog.Logger) {
+// retainEvents deletes old log rows and counter days every hour, and at once when the
+// retention setting changes.
+func retainEvents(ctx context.Context, st *store.Store, live *settings.Service, logger *slog.Logger) {
+	retention := live.Current().Retention
 	run := func() {
 		if retention <= 0 {
 			return
@@ -210,13 +241,19 @@ func retainEvents(ctx context.Context, st *store.Store, retention time.Duration,
 			return
 		case <-ticker.C:
 			run()
+		case <-live.Changed():
+			if next := live.Current().Retention; next != retention {
+				retention = next
+				run()
+			}
 		}
 	}
 }
 
-func recordToStore(st *store.Store) dnsserver.Recorder {
+// recordToStore counts every query and stores the row only when the logging mode keeps it.
+func recordToStore(st *store.Store, live *settings.Service) dnsserver.Recorder {
 	return func(ctx context.Context, ev dnsserver.QueryEvent) error {
-		_, err := st.InsertEvent(ctx, store.Event{
+		return st.RecordQuery(ctx, store.Event{
 			Timestamp:         ev.Timestamp,
 			ClientIP:          ev.ClientIP,
 			QName:             ev.QName,
@@ -227,7 +264,6 @@ func recordToStore(st *store.Store) dnsserver.Recorder {
 			UpstreamLatencyMS: ev.UpstreamLatencyMS,
 			MatchedSource:     ev.MatchedSource,
 			MatchedDomain:     ev.MatchedDomain,
-		})
-		return err
+		}, live.Current().KeepEvent(ev.Action))
 	}
 }

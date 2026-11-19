@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,6 +200,49 @@ func TestRuleChangeAppliesWithoutRestart(t *testing.T) {
 	}
 	if fake.UDPHits.Load()+fake.TCPHits.Load() != before {
 		t.Fatal("blocked query reached upstream after the live update")
+	}
+}
+
+func TestLiveSettingsApplyToTheNextQuery(t *testing.T) {
+	first, err := dnstest.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { first.Close() })
+	second, err := dnstest.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	snap, err := policy.NewSnapshot(nil, []policy.FeedRule{{Name: "demo-local", Domain: "malware-demo.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := policy.NewEngine()
+	engine.Replace(snap)
+	var live atomic.Pointer[dnsserver.Live]
+	live.Store(&dnsserver.Live{BlockedRCode: "REFUSED", Upstream: first.Addr, UpstreamTimeout: time.Second})
+	filter, err := dnsserver.Listen(dnsserver.Options{
+		ListenUDP: "127.0.0.1:0", ListenTCP: "127.0.0.1:0", Engine: engine,
+		Settings: func() dnsserver.Live { return *live.Load() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { filter.Close() })
+
+	if rc := ask(t, filter, "udp", "malware-demo.test.").Rcode; rc != dns.RcodeRefused {
+		t.Fatalf("blocked rcode = %s", dns.RcodeToString[rc])
+	}
+	if ask(t, filter, "udp", "example.com.").Rcode != dns.RcodeSuccess || first.UDPHits.Load() != 1 {
+		t.Fatalf("first upstream hits = %d", first.UDPHits.Load())
+	}
+	live.Store(&dnsserver.Live{BlockedRCode: "NXDOMAIN", Upstream: second.Addr, UpstreamTimeout: time.Second})
+	if rc := ask(t, filter, "tcp", "malware-demo.test.").Rcode; rc != dns.RcodeNameError {
+		t.Fatalf("blocked rcode after change = %s", dns.RcodeToString[rc])
+	}
+	if ask(t, filter, "udp", "example.com.").Rcode != dns.RcodeSuccess || second.UDPHits.Load() != 1 || first.UDPHits.Load() != 1 {
+		t.Fatalf("hits after change: first=%d second=%d", first.UDPHits.Load(), second.UDPHits.Load())
 	}
 }
 

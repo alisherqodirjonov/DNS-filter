@@ -37,14 +37,24 @@ func TestSummaryCountsRatioAndTops(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sum, err := reporting.LoadSummary(ctx, st)
+	// Counted but not stored, as under the "blocked only" or "none" logging modes.
+	unlogged := store.Event{Timestamp: time.Now().UTC(), ClientIP: "192.0.2.13", QName: "quiet.example", QType: "A", Transport: "udp", Action: "ALLOWED", RCode: "NOERROR"}
+	for range 2 {
+		if err := st.RecordQuery(ctx, unlogged, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Outside the reporting window.
+	insert(t, st, store.Event{Timestamp: time.Now().UTC().AddDate(0, 0, -30), ClientIP: "192.0.2.10", QName: "old.example", QType: "A", Transport: "udp", Action: "ALLOWED", RCode: "NOERROR"})
+
+	sum, err := reporting.LoadSummary(ctx, st, time.Now().AddDate(0, 0, -7))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Total != 6 || sum.Allowed != 2 || sum.Blocked != 3 || sum.Errors != 1 {
+	if sum.Total != 8 || sum.Allowed != 4 || sum.Blocked != 3 || sum.Errors != 1 {
 		t.Fatalf("counts = %+v", sum)
 	}
-	if sum.BlockRatio != 50 {
+	if sum.BlockRatio != 37.5 {
 		t.Fatalf("ratio = %v", sum.BlockRatio)
 	}
 	if sum.FeedDomains != 2 || len(sum.Feeds) != 1 || sum.Feeds[0].Status != "ok" {
@@ -59,7 +69,7 @@ func TestSummaryCountsRatioAndTops(t *testing.T) {
 	if sum.TopBlockedClients[0].Count != 2 {
 		t.Fatalf("top client = %+v", sum.TopBlockedClients[0])
 	}
-	if len(sum.Recent) != 6 {
+	if len(sum.Recent) != 7 {
 		t.Fatalf("recent = %d", len(sum.Recent))
 	}
 	if reporting.LastFeedSync(sum.Feeds) == nil {
@@ -80,7 +90,7 @@ func insert(t *testing.T, st *store.Store, ev store.Event) {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
-	if _, err := st.InsertEvent(context.Background(), ev); err != nil {
+	if err := st.RecordQuery(context.Background(), ev, true); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -41,6 +41,29 @@ func (s *Store) UpsertFeed(ctx context.Context, name, source, format string) (Fe
 	return s.FeedByName(ctx, name)
 }
 
+// CreateFeed adds a feed managed from the console. A taken name is ErrConflict.
+func (s *Store) CreateFeed(ctx context.Context, name, source, format string) (Feed, error) {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO feeds(name, source, format, status) VALUES (?, ?, ?, 'pending')`,
+		name, source, format)
+	if err != nil {
+		if isUnique(err) {
+			return Feed{}, fmt.Errorf("%w: feed %s", ErrConflict, name)
+		}
+		return Feed{}, fmt.Errorf("store: create feed: %w", err)
+	}
+	return s.FeedByName(ctx, name)
+}
+
+// DeleteFeed removes a feed and every domain it loaded.
+func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM feeds WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	return requireRow(res)
+}
+
 // FeedByName loads a feed by its unique name.
 func (s *Store) FeedByName(ctx context.Context, name string) (Feed, error) {
 	row := s.db.QueryRowContext(ctx, feedSelect+` WHERE name = ?`, name)

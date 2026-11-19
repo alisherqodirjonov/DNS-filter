@@ -3,11 +3,13 @@ package dnsserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -33,13 +35,22 @@ type QueryEvent struct {
 // Recorder persists a query event. A nil recorder skips logging.
 type Recorder func(context.Context, QueryEvent) error
 
-// Options configures the UDP and TCP listeners.
+// Live holds the answer settings an operator can change while the filter runs.
+type Live struct {
+	BlockedRCode    string
+	Upstream        string
+	UpstreamTimeout time.Duration
+}
+
+// Options configures the UDP and TCP listeners. When Settings is set it is read for every
+// query and takes the place of Upstream and BlockedRCode.
 type Options struct {
 	ListenUDP    string
 	ListenTCP    string
 	Engine       *policy.Engine
 	Upstream     *upstream.Client
 	BlockedRCode string
+	Settings     func() Live
 	Record       Recorder
 	Logger       *slog.Logger
 }
@@ -48,6 +59,18 @@ type Options struct {
 type Server struct {
 	udp *dns.Server
 	tcp *dns.Server
+}
+
+// listenError adds the usual fix to the two bind failures an operator meets first.
+func listenError(proto, addr string, err error) error {
+	hint := ""
+	switch {
+	case errors.Is(err, syscall.EADDRINUSE):
+		hint = ". Another program already uses this port: set dns.listen_udp and dns.listen_tcp in config.json to a free one"
+	case errors.Is(err, syscall.EACCES):
+		hint = ". Ports below 1024 need permission: run make port53 once, or start the filter with sudo"
+	}
+	return fmt.Errorf("dns %s listen %s: %w%s", proto, addr, err, hint)
 }
 
 // Listen binds UDP and TCP. If either bind fails, neither listener is left running.
@@ -60,17 +83,18 @@ func Listen(opt Options) (*Server, error) {
 	}
 	udpConn, err := net.ListenPacket("udp", opt.ListenUDP)
 	if err != nil {
-		return nil, fmt.Errorf("dns udp listen %s: %w", opt.ListenUDP, err)
+		return nil, listenError("udp", opt.ListenUDP, err)
 	}
 	tcpLn, err := net.Listen("tcp", opt.ListenTCP)
 	if err != nil {
 		udpConn.Close()
-		return nil, fmt.Errorf("dns tcp listen %s: %w", opt.ListenTCP, err)
+		return nil, listenError("tcp", opt.ListenTCP, err)
 	}
 	h := &handler{
 		engine:   opt.Engine,
 		upstream: opt.Upstream,
 		blocked:  rcodeValue(opt.BlockedRCode),
+		settings: opt.Settings,
 		record:   opt.Record,
 		logger:   opt.Logger,
 	}
@@ -147,8 +171,17 @@ type handler struct {
 	engine   *policy.Engine
 	upstream *upstream.Client
 	blocked  int
+	settings func() Live
 	record   Recorder
 	logger   *slog.Logger
+}
+
+func (h *handler) current() (*upstream.Client, int) {
+	if h.settings == nil {
+		return h.upstream, h.blocked
+	}
+	live := h.settings()
+	return &upstream.Client{Addr: live.Upstream, Timeout: live.UpstreamTimeout}, rcodeValue(live.BlockedRCode)
 }
 
 func (h *handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
@@ -206,6 +239,7 @@ func (h *handler) handle(req *dns.Msg, transport, clientIP string) (*dns.Msg, Qu
 		return reply(req, dns.RcodeFormatError), ev
 	}
 	ev.QName = name
+	up, blocked := h.current()
 	decision := h.engine.Decide(name)
 	ev.MatchedSource = decision.MatchedSource
 	ev.MatchedDomain = decision.MatchedDomain
@@ -216,19 +250,19 @@ func (h *handler) handle(req *dns.Msg, transport, clientIP string) (*dns.Msg, Qu
 			return reply(req, dns.RcodeFormatError), ev
 		}
 		ev.Action = policy.ActionBlocked
-		code := dns.RcodeToString[h.blocked]
+		code := dns.RcodeToString[blocked]
 		if code == "" {
 			code = "REFUSED"
 		}
-		return reply(req, h.blocked), withRCode(ev, code)
+		return reply(req, blocked), withRCode(ev, code)
 	}
-	if h.upstream == nil {
+	if up == nil {
 		h.logger.Error("upstream client is not configured", "qname", name)
 		ev.Action = policy.ActionError
 		return reply(req, dns.RcodeServerFailure), withRCode(ev, "SERVFAIL")
 	}
 	started := time.Now()
-	resp, rtt, err := h.upstream.Exchange(context.Background(), req)
+	resp, rtt, err := up.Exchange(context.Background(), req)
 	ms := rtt.Milliseconds()
 	if ms == 0 {
 		ms = time.Since(started).Milliseconds()

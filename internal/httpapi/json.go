@@ -74,6 +74,8 @@ type summaryJSON struct {
 	TopBlockedClients []clientCount   `json:"top_blocked_clients"`
 	Feeds             []feedResponse  `json:"feeds"`
 	Recent            []eventResponse `json:"recent_events"`
+	Days              int             `json:"days"`
+	LogMode           string          `json:"log_mode"`
 }
 
 func toEvent(ev store.Event) eventResponse {

@@ -1,8 +1,39 @@
+# Build output
+/dnsfilter
+/bin/
+*.exe
+*.test
+
+# Local configuration. It is created from config.example.json on the first run.
+/config.json
+
+# SQLite database and its journal files
 /data/
 *.db
 *.db-wal
 *.db-shm
-/dnsfilter
-/bin/
-*.exe
+*.db-journal
+
+# Test and profiling output
+*.out
+coverage.html
+*.prof
+
+# Packet captures and logs
 *.pcap
+*.pcapng
+*.log
+
+# Secrets
+.env
+.env.*
+
+# Editors, agents, and operating systems
+.claude/
+.cursor/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

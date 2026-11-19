@@ -2,11 +2,13 @@ package feeds_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,13 +187,117 @@ func TestBodyLimitAndScheduler(t *testing.T) {
 	var calls atomic.Int32
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go feeds.Schedule(runCtx, 20*time.Millisecond, func(context.Context) { calls.Add(1) })
+	go feeds.Schedule(runCtx, func() time.Duration { return 20 * time.Millisecond }, nil, func(context.Context) { calls.Add(1) })
 	deadline := time.Now().Add(time.Second)
 	for calls.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if calls.Load() < 2 {
 		t.Fatalf("scheduler calls = %d", calls.Load())
+	}
+}
+
+func TestScheduleFollowsIntervalChanges(t *testing.T) {
+	var interval atomic.Int64
+	interval.Store(int64(time.Hour))
+	var mu sync.Mutex
+	changed := make(chan struct{})
+	current := func() <-chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		return changed
+	}
+	ran := make(chan struct{}, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go feeds.Schedule(ctx, func() time.Duration { return time.Duration(interval.Load()) }, current,
+		func(context.Context) { ran <- struct{}{} })
+
+	select {
+	case <-ran:
+		t.Fatal("ran before the hour was up")
+	case <-time.After(50 * time.Millisecond):
+	}
+	interval.Store(int64(10 * time.Millisecond))
+	mu.Lock()
+	close(changed)
+	changed = make(chan struct{})
+	mu.Unlock()
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("did not run after the interval was shortened")
+	}
+}
+
+func TestConsoleFeedsAddSyncAndRemove(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t, filepath.Join(t.TempDir(), "dns.db"))
+	dir := t.TempDir()
+	list := filepath.Join(dir, "lab.txt")
+	if err := os.WriteFile(list, []byte("malware-demo.test\nphishing-demo.test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reloads atomic.Int32
+	svc := &feeds.Service{Store: st, OnChange: func(context.Context) error { reloads.Add(1); return nil }}
+
+	bad := [][4]string{
+		{"1bad", list, "", "domains"},
+		{"lab", list, "", "csv"},
+		{"lab", "", "", "domains"},
+		{"lab", list, "https://feeds.example/x", "domains"},
+		{"lab", "", "http://feeds.example/x", "domains"},
+		{"lab", "relative/list.txt", "", "domains"},
+	}
+	for _, c := range bad {
+		_, err := feeds.CheckSource(c[0], c[1], c[2], c[3])
+		var serr *feeds.SourceError
+		if !errors.As(err, &serr) {
+			t.Fatalf("CheckSource(%v) error = %v", c, err)
+		}
+	}
+	src, err := feeds.CheckSource(" lab ", list, "", "Domains")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := svc.Add(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Status != "ok" || feed.DomainsCount != 2 || reloads.Load() != 1 {
+		t.Fatalf("added feed = %+v reloads=%d", feed, reloads.Load())
+	}
+	if _, err := svc.Add(ctx, src); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate add error = %v", err)
+	}
+
+	missing, err := feeds.CheckSource("later", filepath.Join(dir, "not-yet.txt"), "", "domains")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := svc.Add(ctx, missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != "error" || pending.LastError == "" {
+		t.Fatalf("feed with missing file = %+v", pending)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "not-yet.txt"), []byte("c2-demo.test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc.SyncAll(ctx)
+	if n, err := st.CountFeedDomains(ctx); err != nil || n != 3 {
+		t.Fatalf("domains after SyncAll = %d err=%v", n, err)
+	}
+
+	if _, err := svc.Remove(ctx, feed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.CountFeedDomains(ctx); err != nil || n != 1 {
+		t.Fatalf("domains after remove = %d err=%v", n, err)
+	}
+	if _, err := svc.Remove(ctx, feed.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second remove error = %v", err)
 	}
 }
 

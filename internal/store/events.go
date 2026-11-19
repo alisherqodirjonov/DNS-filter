@@ -31,16 +31,88 @@ type EventFilter struct {
 	Offset int
 }
 
-// InsertEvent writes one query event and returns its id.
+// ActionCounts are per-decision totals taken from the daily counters.
+type ActionCounts struct {
+	Allowed int
+	Blocked int
+	Errors  int
+}
+
+// Total is the number of answered queries.
+func (c ActionCounts) Total() int {
+	return c.Allowed + c.Blocked + c.Errors
+}
+
+// RecordQuery counts a query on its day and, when keep is true, also stores the event row.
+// Counters are kept for every query so totals stay right whatever the logging mode.
+func (s *Store) RecordQuery(ctx context.Context, ev Event, keep bool) error {
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO query_counts(day, action, count) VALUES (?, ?, 1)
+		ON CONFLICT(day, action) DO UPDATE SET count = count + 1`,
+		day(ev.Timestamp), ev.Action); err != nil {
+		return fmt.Errorf("store: count query: %w", err)
+	}
+	if keep {
+		if _, err := insertEvent(ctx, tx, ev); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CountsSince sums the daily counters from the day of since onward.
+func (s *Store) CountsSince(ctx context.Context, since time.Time) (ActionCounts, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT action, SUM(count) FROM query_counts WHERE day >= ? GROUP BY action`, day(since))
+	if err != nil {
+		return ActionCounts{}, err
+	}
+	defer rows.Close()
+	var c ActionCounts
+	for rows.Next() {
+		var action string
+		var n int
+		if err := rows.Scan(&action, &n); err != nil {
+			return ActionCounts{}, err
+		}
+		switch action {
+		case "ALLOWED":
+			c.Allowed = n
+		case "BLOCKED":
+			c.Blocked = n
+		case "ERROR":
+			c.Errors = n
+		}
+	}
+	return c, rows.Err()
+}
+
+// InsertEvent writes one query event and returns its id. It does not touch the counters.
 func (s *Store) InsertEvent(ctx context.Context, ev Event) (int64, error) {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
+	return insertEvent(ctx, s.db, ev)
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertEvent(ctx context.Context, db execer, ev Event) (int64, error) {
 	var latency any
 	if ev.UpstreamLatencyMS != nil {
 		latency = *ev.UpstreamLatencyMS
 	}
-	res, err := s.db.ExecContext(ctx, `
+	res, err := db.ExecContext(ctx, `
 		INSERT INTO query_events(
 			timestamp, client_ip, qname, qtype, transport, action, rcode,
 			upstream_latency_ms, matched_source, matched_domain
@@ -83,13 +155,21 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]Event, int, er
 	return out, total, rows.Err()
 }
 
-// DeleteEventsBefore removes query events older than cutoff and returns the number deleted.
+// DeleteEventsBefore removes query events older than cutoff, and counter days before the
+// cutoff's day, and returns the number of events deleted.
 func (s *Store) DeleteEventsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM query_events WHERE timestamp < ?`, formatTime(cutoff))
 	if err != nil {
 		return 0, err
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM query_counts WHERE day < ?`, day(cutoff)); err != nil {
+		return 0, err
+	}
 	return res.RowsAffected()
+}
+
+func day(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
 }
 
 func eventWhere(f EventFilter) (string, []any) {

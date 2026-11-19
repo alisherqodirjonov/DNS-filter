@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -175,7 +176,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config: duplicate feed name %q", name)
 		}
 		seen[name] = struct{}{}
-		if !validFeedName(name) {
+		if !ValidFeedName(name) {
 			return nil, fmt.Errorf("config: feed name %q must start with a letter and contain only letters, digits, hyphens, or underscores", name)
 		}
 		if format != "domains" && format != "hosts" {
@@ -217,38 +218,62 @@ func validateNetwork(cfg *Config, timeoutSec, retentionDays, syncHours int) erro
 	if err := validateListen("http.listen", cfg.HTTP.Listen); err != nil {
 		return err
 	}
-	if timeoutSec < 1 || timeoutSec > 30 {
-		return fmt.Errorf("config: dns.upstream_timeout_seconds must be between 1 and 30")
+	if timeoutSec < MinUpstreamTimeoutSeconds || timeoutSec > MaxUpstreamTimeoutSeconds {
+		return fmt.Errorf("config: dns.upstream_timeout_seconds must be between %d and %d", MinUpstreamTimeoutSeconds, MaxUpstreamTimeoutSeconds)
 	}
-	if _, ok := blockedRCodes[cfg.DNS.BlockedRCode]; !ok {
+	if !ValidBlockedRCode(cfg.DNS.BlockedRCode) {
 		return fmt.Errorf("config: dns.blocked_rcode must be REFUSED, SERVFAIL, or NXDOMAIN")
 	}
-	if retentionDays < 1 || retentionDays > 3650 {
-		return fmt.Errorf("config: logging.retention_days must be between 1 and 3650")
+	if retentionDays < MinRetentionDays || retentionDays > MaxRetentionDays {
+		return fmt.Errorf("config: logging.retention_days must be between %d and %d", MinRetentionDays, MaxRetentionDays)
 	}
-	if syncHours < 1 || syncHours > 720 {
-		return fmt.Errorf("config: feeds.sync_interval_hours must be between 1 and 720")
+	if syncHours < MinSyncIntervalHours || syncHours > MaxSyncIntervalHours {
+		return fmt.Errorf("config: feeds.sync_interval_hours must be between %d and %d", MinSyncIntervalHours, MaxSyncIntervalHours)
 	}
 	return nil
 }
 
 func validateListen(field, addr string) error {
-	if addr == "" {
-		return fmt.Errorf("config: %s is required", field)
-	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("config: %s %q must be host:port", field, addr)
-	}
-	if !validHost(host) {
-		return fmt.Errorf("config: %s host %q is not a valid IP or hostname", field, host)
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("config: %s port must be between 1 and 65535", field)
+	if err := CheckHostPort(addr); err != nil {
+		return fmt.Errorf("config: %s %w", field, err)
 	}
 	return nil
 }
+
+// CheckHostPort reports why addr is not a usable host:port. The message reads after a field name.
+func CheckHostPort(addr string) error {
+	if addr == "" {
+		return errors.New("is required")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%q must be host:port", addr)
+	}
+	if !validHost(host) {
+		return fmt.Errorf("host %q is not a valid IP or hostname", host)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+// ValidBlockedRCode reports whether code is a response code the filter may answer blocked names with.
+func ValidBlockedRCode(code string) bool {
+	_, ok := blockedRCodes[code]
+	return ok
+}
+
+// Limits for the values an operator can tune. They apply to the file and to the console.
+const (
+	MinUpstreamTimeoutSeconds = 1
+	MaxUpstreamTimeoutSeconds = 30
+	MinRetentionDays          = 1
+	MaxRetentionDays          = 3650
+	MinSyncIntervalHours      = 1
+	MaxSyncIntervalHours      = 720
+)
 
 func validHost(host string) bool {
 	if host == "" {
@@ -279,7 +304,9 @@ func validHost(host string) bool {
 	return true
 }
 
-func validFeedName(name string) bool {
+// ValidFeedName reports whether name starts with a letter and holds only letters, digits,
+// hyphens, or underscores, up to 64 characters.
+func ValidFeedName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
 	}

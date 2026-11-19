@@ -36,19 +36,16 @@ type ClientCount struct {
 	Count    int
 }
 
-// LoadSummary calculates dashboard figures from the events still in SQLite.
-func LoadSummary(ctx context.Context, st *store.Store) (Summary, error) {
+// LoadSummary calculates dashboard figures. Totals come from the daily counters starting on
+// the day of since, so they include queries the logging mode did not store. The top lists
+// and recent queries come from the stored log rows.
+func LoadSummary(ctx context.Context, st *store.Store, since time.Time) (Summary, error) {
 	var sum Summary
-	err := st.DB().QueryRowContext(ctx, `
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN action = 'ALLOWED' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN action = 'BLOCKED' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN action = 'ERROR' THEN 1 ELSE 0 END), 0)
-		FROM query_events`).Scan(&sum.Total, &sum.Allowed, &sum.Blocked, &sum.Errors)
+	counts, err := st.CountsSince(ctx, since)
 	if err != nil {
 		return Summary{}, err
 	}
+	sum.Total, sum.Allowed, sum.Blocked, sum.Errors = counts.Total(), counts.Allowed, counts.Blocked, counts.Errors
 	if sum.Total > 0 {
 		sum.BlockRatio = math.Round((float64(sum.Blocked)/float64(sum.Total))*1000) / 10
 	}

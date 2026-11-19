@@ -128,6 +128,39 @@ func TestEndToEndFilter(t *testing.T) {
 		t.Fatalf("events missing both outcomes: %s", eventsBody)
 	}
 
+	// Settings changed in the console apply to the next query, without a restart.
+	status, raw = doJSON(t, client, http.MethodPut, base+"/api/v1/settings", admin, map[string]any{
+		"blocked_rcode": "NXDOMAIN", "log_mode": "none",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("settings update = %d %s", status, raw)
+	}
+	storedBefore, totalBefore := logRows(t, client, base, admin), summaryTotal(t, client, base, admin)
+	if resp := exchange(t, dnsAddr, "udp", "phishing-demo.test."); resp.Rcode != dns.RcodeNameError {
+		t.Fatalf("blocked rcode after change = %d", resp.Rcode)
+	}
+	exchange(t, dnsAddr, "udp", "example.com.")
+	if got := logRows(t, client, base, admin); got != storedBefore {
+		t.Fatalf("log rows with logging off = %d, want %d", got, storedBefore)
+	}
+	if got := summaryTotal(t, client, base, admin); got != totalBefore+2 {
+		t.Fatalf("overview total with logging off = %d, want %d", got, totalBefore+2)
+	}
+
+	status, raw = doJSON(t, client, http.MethodPut, base+"/api/v1/settings", admin, map[string]any{"log_mode": "blocked"})
+	if status != http.StatusOK {
+		t.Fatalf("settings update = %d %s", status, raw)
+	}
+	exchange(t, dnsAddr, "udp", "example.com.")
+	exchange(t, dnsAddr, "tcp", "phishing-demo.test.")
+	status, raw = doJSON(t, client, http.MethodGet, base+"/api/v1/events?limit=1", admin, nil)
+	if status != http.StatusOK || !bytes.Contains(raw, []byte(`"qname":"phishing-demo.test","qtype":"A","transport":"tcp","action":"BLOCKED","rcode":"NXDOMAIN"`)) {
+		t.Fatalf("newest row with blocked-only logging = %s", raw)
+	}
+	if got := logRows(t, client, base, admin); got != storedBefore+1 {
+		t.Fatalf("log rows with blocked-only logging = %d, want %d", got, storedBefore+1)
+	}
+
 	cancel()
 	select {
 	case err := <-done:
@@ -136,6 +169,35 @@ func TestEndToEndFilter(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown timed out")
+	}
+}
+
+func logRows(t *testing.T, client *http.Client, base string, who identity) int {
+	t.Helper()
+	var out struct {
+		Total int `json:"total"`
+	}
+	getInto(t, client, base+"/api/v1/events?limit=1", who, &out)
+	return out.Total
+}
+
+func summaryTotal(t *testing.T, client *http.Client, base string, who identity) int {
+	t.Helper()
+	var out struct {
+		Total int `json:"total"`
+	}
+	getInto(t, client, base+"/api/v1/dashboard/summary", who, &out)
+	return out.Total
+}
+
+func getInto(t *testing.T, client *http.Client, url string, who identity, dst any) {
+	t.Helper()
+	status, raw := doJSON(t, client, http.MethodGet, url, who, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET %s = %d %s", url, status, raw)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		t.Fatal(err)
 	}
 }
 

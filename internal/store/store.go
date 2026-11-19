@@ -67,34 +67,40 @@ func (s *Store) DB() *sql.DB {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&exists); err != nil {
-		return fmt.Errorf("store: check schema: %w", err)
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("store: prepare schema: %w", err)
 	}
-	if exists == 1 {
+	for _, m := range migrations.All {
 		var applied int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 1`).Scan(&applied); err != nil {
-			return fmt.Errorf("store: check migration: %w", err)
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.Version).Scan(&applied); err != nil {
+			return fmt.Errorf("store: check migration %d: %w", m.Version, err)
 		}
 		if applied == 1 {
-			return nil
+			continue
+		}
+		if err := s.apply(ctx, m); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func (s *Store) apply(ctx context.Context, m migrations.Migration) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("store: begin migration: %w", err)
+		return fmt.Errorf("store: begin migration %d: %w", m.Version, err)
 	}
 	defer tx.Rollback()
-	for _, stmt := range splitSQL(migrations.SQL) {
+	for _, stmt := range splitSQL(m.SQL) {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("store: migrate: %w\nstatement: %s", err, stmt)
+			return fmt.Errorf("store: migration %d: %w\nstatement: %s", m.Version, err, stmt)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)`, formatTime(time.Now())); err != nil {
-		return fmt.Errorf("store: record migration: %w", err)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, m.Version, formatTime(time.Now())); err != nil {
+		return fmt.Errorf("store: record migration %d: %w", m.Version, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit migration: %w", err)
+		return fmt.Errorf("store: commit migration %d: %w", m.Version, err)
 	}
 	return nil
 }

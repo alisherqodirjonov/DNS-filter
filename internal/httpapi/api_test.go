@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"dnsfilter/internal/auth"
 	"dnsfilter/internal/config"
 	"dnsfilter/internal/feeds"
 	"dnsfilter/internal/httpapi"
 	"dnsfilter/internal/policy"
+	"dnsfilter/internal/settings"
 	"dnsfilter/internal/store"
 	"dnsfilter/web"
 )
@@ -281,18 +283,29 @@ func newEnv(t *testing.T) *lab {
 	if err != nil || len(feedsList) != 1 {
 		t.Fatalf("feeds = %+v err=%v", feedsList, err)
 	}
+	live, err := settings.Load(context.Background(), st, settings.Values{
+		BlockedRCode: "REFUSED", Upstream: "192.0.2.53:53", UpstreamTimeout: 2 * time.Second,
+		Retention: 7 * 24 * time.Hour, SyncInterval: 6 * time.Hour,
+		LogMode: settings.LogAll, FeedsSource: settings.FeedsFromFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	api := &httpapi.API{
-		Store: st, Auth: accounts, Feeds: feedSvc, Engine: engine, Logger: logger,
+		Store: st, Auth: accounts, Feeds: feedSvc, Settings: live, Engine: engine, Logger: logger,
 		Reload: feedSvc.OnChange,
 	}
-	return &lab{api: api, engine: engine, logs: &logs, feedID: feedsList[0].ID}
+	return &lab{api: api, engine: engine, logs: &logs, feedID: feedsList[0].ID, store: st, settings: live, dir: dir}
 }
 
 type lab struct {
-	api    *httpapi.API
-	engine *policy.Engine
-	logs   *bytes.Buffer
-	feedID int64
+	api      *httpapi.API
+	engine   *policy.Engine
+	logs     *bytes.Buffer
+	feedID   int64
+	store    *store.Store
+	settings *settings.Service
+	dir      string
 }
 
 func postJSON(t *testing.T, client *http.Client, url, cookie, csrf string, payload any) *http.Response {

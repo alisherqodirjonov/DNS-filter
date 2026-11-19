@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"dnsfilter/internal/config"
@@ -21,7 +23,9 @@ const (
 	DefaultTimeout = 30 * time.Second
 )
 
-// Service loads configured feeds into SQLite and notifies the policy engine.
+// Service loads feeds into SQLite and notifies the policy engine.
+// The feeds table is the list that gets synced. Sources is the config.json list that
+// Reconcile copies into it.
 type Service struct {
 	Store    *store.Store
 	Sources  []config.FeedSource
@@ -31,6 +35,11 @@ type Service struct {
 	Logger   *slog.Logger
 	OnChange func(context.Context) error
 }
+
+// SourceError is a feed definition the operator needs to correct.
+type SourceError struct{ Message string }
+
+func (e *SourceError) Error() string { return e.Message }
 
 // Reconcile makes the feeds table match the configuration.
 // Feeds removed from the configuration are deleted, along with their domains.
@@ -45,27 +54,98 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	return s.Store.DeleteFeedsNotNamed(ctx, names)
 }
 
-// SyncAll reloads every configured feed. One failure does not stop the others.
+// SyncAll reloads every feed in the table. One failure does not stop the others.
 func (s *Service) SyncAll(ctx context.Context) {
-	for _, src := range s.Sources {
-		if err := s.SyncSource(ctx, src); err != nil && s.Logger != nil {
-			s.Logger.Error("feed sync failed", "feed", src.Name, "error", err.Error())
+	list, err := s.Store.ListFeeds(ctx)
+	if err != nil {
+		if s.Logger != nil && ctx.Err() == nil {
+			s.Logger.Error("could not list feeds", "error", err.Error())
+		}
+		return
+	}
+	for _, feed := range list {
+		if err := s.SyncSource(ctx, sourceOf(feed)); err != nil && s.Logger != nil {
+			s.Logger.Error("feed sync failed", "feed", feed.Name, "error", err.Error())
 		}
 	}
 }
 
-// SyncByID reloads one configured feed. The id must belong to a source in the configuration.
+// SyncByID reloads one feed.
 func (s *Service) SyncByID(ctx context.Context, id int64) error {
 	feed, err := s.Store.FeedByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	for _, src := range s.Sources {
-		if src.Name == feed.Name {
-			return s.SyncSource(ctx, src)
+	return s.SyncSource(ctx, sourceOf(feed))
+}
+
+// CheckSource validates a feed typed into the console. Exactly one of path or url is set;
+// a path must be absolute because there is no config file to resolve it against.
+func CheckSource(name, path, rawURL, format string) (config.FeedSource, error) {
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+	rawURL = strings.TrimSpace(rawURL)
+	format = strings.ToLower(strings.TrimSpace(format))
+	if !config.ValidFeedName(name) {
+		return config.FeedSource{}, &SourceError{"Name must start with a letter and use only letters, digits, hyphens, or underscores (64 at most)."}
+	}
+	if format != FormatDomains && format != FormatHosts {
+		return config.FeedSource{}, &SourceError{"Format must be domains or hosts."}
+	}
+	if (path == "") == (rawURL == "") {
+		return config.FeedSource{}, &SourceError{"Give either a file path or an https URL."}
+	}
+	if rawURL != "" {
+		u, err := url.Parse(rawURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return config.FeedSource{}, &SourceError{"The URL must start with https://."}
+		}
+		return config.FeedSource{Name: name, URL: rawURL, Format: format}, nil
+	}
+	if !filepath.IsAbs(path) {
+		return config.FeedSource{}, &SourceError{"The file path must be absolute, like /etc/dnsfilter/list.txt."}
+	}
+	return config.FeedSource{Name: name, Path: filepath.Clean(path), Format: format}, nil
+}
+
+// Add stores a new feed and loads it once. The feed is kept even when that first load
+// fails; its status and last error show why. A taken name is store.ErrConflict.
+func (s *Service) Add(ctx context.Context, src config.FeedSource) (store.Feed, error) {
+	feed, err := s.Store.CreateFeed(ctx, src.Name, src.Origin(), src.Format)
+	if err != nil {
+		return store.Feed{}, err
+	}
+	if err := s.SyncSource(ctx, src); err != nil && s.Logger != nil {
+		s.Logger.Warn("new feed did not load", "feed", src.Name, "error", err.Error())
+	}
+	return s.Store.FeedByID(ctx, feed.ID)
+}
+
+// Remove deletes a feed and its domains, then rebuilds the policy without them.
+func (s *Service) Remove(ctx context.Context, id int64) (store.Feed, error) {
+	feed, err := s.Store.FeedByID(ctx, id)
+	if err != nil {
+		return store.Feed{}, err
+	}
+	if err := s.Store.DeleteFeed(ctx, id); err != nil {
+		return store.Feed{}, err
+	}
+	if s.OnChange != nil {
+		if err := s.OnChange(ctx); err != nil {
+			return feed, err
 		}
 	}
-	return fmt.Errorf("feed %q is not in the configuration", feed.Name)
+	return feed, nil
+}
+
+func sourceOf(feed store.Feed) config.FeedSource {
+	src := config.FeedSource{Name: feed.Name, Format: feed.Format}
+	if strings.HasPrefix(feed.Source, "https://") {
+		src.URL = feed.Source
+	} else {
+		src.Path = feed.Source
+	}
+	return src
 }
 
 // SyncSource downloads or reads one feed and replaces its domains only after a usable parse.
@@ -201,19 +281,30 @@ func readLimited(r io.Reader, max int64) ([]byte, error) {
 	return body, nil
 }
 
-// Schedule calls fn on each tick until ctx is cancelled. It does not call fn immediately.
-func Schedule(ctx context.Context, every time.Duration, fn func(context.Context)) {
-	if every <= 0 {
-		every = 24 * time.Hour
-	}
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+// Schedule calls fn once every interval until ctx is cancelled. It does not call fn
+// immediately. When changed fires, the interval is read again and the next run moves to
+// the last run plus the new interval, so unrelated changes do not push it back.
+func Schedule(ctx context.Context, every func() time.Duration, changed func() <-chan struct{}, fn func(context.Context)) {
+	last := time.Now()
 	for {
+		interval := every()
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		var wake <-chan struct{}
+		if changed != nil {
+			wake = changed()
+		}
+		timer := time.NewTimer(max(time.Until(last.Add(interval)), 0))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			fn(ctx)
+			last = time.Now()
+		case <-wake:
+			timer.Stop()
 		}
 	}
 }

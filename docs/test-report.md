@@ -1,6 +1,6 @@
 # Test report
 
-Recorded on 15 November 2026, on this machine, with Go 1.27.4 (`GOTOOLCHAIN=local`). The suite uses a local stand-in resolver. It does not query public malicious names. The demonstration names are `example.com` and the `.test` names in `testdata/demo-blocklist.txt`.
+First recorded on 15 November 2026 and brought up to date on 17 November 2026, after the console settings, Logs page, and accounts were added. Both runs were on this machine with Go 1.27.4 (`GOTOOLCHAIN=local`). The suite uses a local stand-in resolver. It does not query public malicious names. The demonstration names are `example.com`, `example.org`, `example.net`, and synthetic `.test` names.
 
 ## Commands
 
@@ -10,19 +10,20 @@ go version go1.27.4 linux/amd64
 
 $ gofmt -l .
 $ go vet ./...
-$ go test -race ./... -count=1 -timeout 180s
+$ go test -race ./... -count=1 -timeout 300s
 ?   	dnsfilter/cmd/dnsfilter	[no test files]
-ok  	dnsfilter/internal/app	15.517s
-ok  	dnsfilter/internal/auth	18.130s
-ok  	dnsfilter/internal/config	1.084s
-ok  	dnsfilter/internal/dnsserver	1.546s
+ok  	dnsfilter/internal/app	20.115s
+ok  	dnsfilter/internal/auth	60.036s
+ok  	dnsfilter/internal/config	1.180s
+ok  	dnsfilter/internal/dnsserver	1.871s
 ?   	dnsfilter/internal/dnstest	[no test files]
-ok  	dnsfilter/internal/feeds	1.363s
-ok  	dnsfilter/internal/httpapi	14.559s
-ok  	dnsfilter/internal/policy	1.068s
-ok  	dnsfilter/internal/reporting	1.123s
-ok  	dnsfilter/internal/store	1.269s
-ok  	dnsfilter/internal/upstream	1.437s
+ok  	dnsfilter/internal/feeds	1.960s
+ok  	dnsfilter/internal/httpapi	74.071s
+ok  	dnsfilter/internal/policy	1.128s
+ok  	dnsfilter/internal/reporting	1.291s
+ok  	dnsfilter/internal/settings	1.357s
+ok  	dnsfilter/internal/store	2.440s
+ok  	dnsfilter/internal/upstream	1.657s
 ?   	dnsfilter/migrations	[no test files]
 ?   	dnsfilter/web	[no test files]
 
@@ -31,11 +32,13 @@ $ go build -o dnsfilter ./cmd/dnsfilter
 
 `gofmt -l` printed nothing. `go vet` printed nothing. The race detector reported no races. The build succeeded.
 
-The end-to-end test in `internal/app` starts the real process against the stand-in resolver. It checks UDP and TCP allowed queries, a feed block that does not call upstream, a name that must not match by spelling, a truncated UDP answer retried over TCP, a garbage datagram that does not stop the server, an analyst forbidden from creating a rule, an admin allow rule that takes effect without a restart, and both the blocked and allowed events for that name.
+The end-to-end test in `internal/app` starts the real process against the stand-in resolver. It checks UDP and TCP allowed queries, a feed block that does not call upstream, a name that must not match by spelling, a truncated UDP answer retried over TCP, a garbage datagram that does not stop the server, an analyst forbidden from creating a rule, an admin allow rule that takes effect without a restart, and both the blocked and allowed events for that name. It then saves NXDOMAIN and the logging choice Nothing through the settings API: blocked queries answer `NXDOMAIN`, no rows are stored, and the overview total still rises. With Blocked only, only the blocked row is stored.
+
+Other tests added with the console settings cover: upgrading a version 1 database, with daily counts filled from the existing rows; saved settings winning over the file and invalid saved values being ignored; a changed sync interval moving the next feed sync; the default administrator being limited to the password change; account creation, reset, and deletion rules, including the last administrator; and console feeds being added, synced, and removed.
 
 ## Live process
 
-UDP port 5353 on this machine is already bound on `0.0.0.0`, so `config.example.json` cannot bind it here. The example file still uses `127.0.0.1:5353`, which is the right default on a machine where that port is free. The live check used `127.0.0.1:5354` for DNS and `127.0.0.1:8080` for the console, with a new SQLite file and upstream `1.1.1.1:53`.
+UDP port 5353 on this machine is bound on `0.0.0.0` by mDNS, so the example config has since moved to `127.0.0.1:5354`. The live check used `127.0.0.1:5354` for DNS and `127.0.0.1:8080` for the console, with a new SQLite file and upstream `1.1.1.1:53`.
 
 First start, empty database:
 
@@ -80,19 +83,32 @@ After the second start, `malware-demo.test` was still `REFUSED` and `example.com
 
 ## Console
 
-Signed in through the browser as `admin` and as `analyst`.
+Signed in through the browser as `admin` and as `analyst`. This check predates the Logs and Settings pages, when the log page was called Events.
 
 - `/` redirected to the sign-in page, then to the overview after sign-in.
 - The overview counts matched the log: 9 queries, 4 allowed, 5 blocked, block ratio 55.6%, 3 feed names. Later queries increased those counts.
-- The events filter for `malware-demo.test` and Blocked returned only those rows, over UDP and TCP.
+- The log filter for `malware-demo.test` and Blocked returned only those rows, over UDP and TCP.
 - Adding the deny rule for `lab-block.test` changed DNS behavior on the next query. Deleting it restored forwarding.
 - Sync now reloaded `demo-local` and left the status at `ok` with 3 names.
 - The audit log showed `login_success`, `rule_create`, and `feed_sync`. It did not show a password or a session token.
 - The analyst could read the overview, events, rules, and feeds. Audit was hidden. The rules page had no add form, and the feeds page had no Sync button. Opening `/audit` directly showed “This action is limited to an administrator.”
 - Signing out returned to the sign-in page.
-- At a 390px width the console stacks into one column and does not scroll sideways.
+- On a narrow window the sidebar becomes a top bar and the overview panels stack into one column. Wide tables scroll inside their own box.
 
-Screenshots: `docs/screenshots/login.png`, `dashboard.png`, `events.png`, `rules.png`, `feeds.png`, `audit.png`.
+## Console settings, logs, and accounts
+
+Checked on 17 November 2026 against two live processes on loopback (console on 8081 and 8082, DNS on 5354 and 5355, upstream `1.1.1.1:53`).
+
+- An empty database logged `created the default administrator; sign in as admin with password admin and choose a new password`. Signing in as `admin`/`admin` opened Account with the navigation hidden. `/dashboard` and the other API routes returned to Account until a new password was set. Mismatched new passwords were caught on the form.
+- Settings showed every value as “From config.json”. An upstream of `1.1.1.1` without a port was rejected with `Upstream resolver "1.1.1.1" must be host:port.` and the field was marked. NXDOMAIN was saved, and the next `dig` for `phishing-demo.test` answered `NXDOMAIN` with no restart. Saving with no change said “Nothing changed.”
+- On Logs, Blocked only was saved. Two `dig` queries, one allowed and one blocked, raised the overview total by two and stored one row.
+- Users: an analyst was added with a temporary password, reset, then signed in, was sent to Account, and chose a password. The analyst saw the logging choice and settings as disabled controls, with no Users or Audit pages. `PUT /api/v1/settings`, `GET /api/v1/users`, and `POST /api/v1/feeds` returned 403 for the analyst. Deleting the analyst asked for confirmation and removed the row.
+- Feeds: adding `/tmp/dnsfilter-ui/extra.txt` loaded 2 names and blocked `tracker-demo.test` at once, and the page said the list is now managed in the console. Removing `demo-local` asked for confirmation; `malware-demo.test` was then counted as allowed and forwarded.
+- After a restart the console feed list, NXDOMAIN, and Blocked only were all still in effect, and the process log said `console settings in effect ... feeds_from=console` and that the feeds in the config file are not applied.
+- Audit listed each step in plain words: changed their password, changed settings (Logging, Blocked answer), added and reset an account, added and removed a feed, deleted an account.
+- At 390 pixels wide, no page scrolls sideways.
+
+Screenshots: `docs/screenshots/login.png`, `account-first-sign-in.png`, `dashboard.png`, `logs.png`, `logs-narrow.png`, `rules.png`, `feeds.png`, `settings.png`, `users.png`, `audit.png`.
 
 ## Packet capture
 

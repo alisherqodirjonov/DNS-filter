@@ -3,7 +3,20 @@ package migrations
 
 import _ "embed"
 
-// SQL is the initial schema. Later changes get a new file and a new version.
-//
+// Migration is one schema step. Versions are applied in order and recorded in schema_migrations.
+type Migration struct {
+	Version int
+	SQL     string
+}
+
 //go:embed 001_init.sql
-var SQL string
+var initSQL string
+
+//go:embed 002_console_settings.sql
+var consoleSettingsSQL string
+
+// All lists every migration. A new schema change gets a new file and the next version.
+var All = []Migration{
+	{Version: 1, SQL: initSQL},
+	{Version: 2, SQL: consoleSettingsSQL},
+}

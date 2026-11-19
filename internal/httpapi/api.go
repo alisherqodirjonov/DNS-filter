@@ -20,20 +20,34 @@ import (
 	"dnsfilter/internal/feeds"
 	"dnsfilter/internal/policy"
 	"dnsfilter/internal/reporting"
+	"dnsfilter/internal/settings"
 	"dnsfilter/internal/store"
 	"dnsfilter/web"
 )
 
 // API serves the JSON API and the embedded console.
 type API struct {
-	Store  *store.Store
-	Auth   *auth.Service
-	Feeds  *feeds.Service
-	Engine *policy.Engine
-	Logger *slog.Logger
-	Reload func(context.Context) error
-	tmpl   *template.Template
-	static http.Handler
+	Store    *store.Store
+	Auth     *auth.Service
+	Feeds    *feeds.Service
+	Settings *settings.Service
+	Engine   *policy.Engine
+	Logger   *slog.Logger
+	Reload   func(context.Context) error
+	tmpl     *template.Template
+	static   http.Handler
+}
+
+var pageTitles = map[string]string{
+	"login": "Sign in", "dashboard": "Overview", "logs": "Logs", "rules": "Rules", "feeds": "Feeds",
+	"settings": "Settings", "users": "Users", "audit": "Audit", "account": "Account",
+}
+
+// While an account must change its password, only these API paths answer.
+var passwordChangePaths = map[string]bool{
+	"/api/v1/me":               true,
+	"/api/v1/auth/logout":      true,
+	"/api/v1/account/password": true,
 }
 
 // Handler returns the root handler with security headers applied.
@@ -59,10 +73,16 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", a.home)
 	mux.HandleFunc("GET /login", a.page("login"))
 	mux.HandleFunc("GET /dashboard", a.page("dashboard"))
-	mux.HandleFunc("GET /events", a.page("events"))
+	mux.HandleFunc("GET /logs", a.page("logs"))
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/logs", http.StatusMovedPermanently)
+	})
 	mux.HandleFunc("GET /rules", a.page("rules"))
 	mux.HandleFunc("GET /feeds", a.page("feeds"))
+	mux.HandleFunc("GET /settings", a.page("settings"))
+	mux.HandleFunc("GET /users", a.page("users"))
 	mux.HandleFunc("GET /audit", a.page("audit"))
+	mux.HandleFunc("GET /account", a.page("account"))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		a.static.ServeHTTP(w, r)
@@ -78,7 +98,16 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/rules", a.createRule)
 	mux.HandleFunc("DELETE /api/v1/rules/{id}", a.deleteRule)
 	mux.HandleFunc("GET /api/v1/feeds", a.listFeeds)
+	mux.HandleFunc("POST /api/v1/feeds", a.createFeed)
+	mux.HandleFunc("DELETE /api/v1/feeds/{id}", a.deleteFeed)
 	mux.HandleFunc("POST /api/v1/feeds/{id}/sync", a.syncFeed)
+	mux.HandleFunc("GET /api/v1/settings", a.getSettings)
+	mux.HandleFunc("PUT /api/v1/settings", a.updateSettings)
+	mux.HandleFunc("POST /api/v1/account/password", a.changePassword)
+	mux.HandleFunc("GET /api/v1/users", a.listUsers)
+	mux.HandleFunc("POST /api/v1/users", a.createUser)
+	mux.HandleFunc("POST /api/v1/users/{id}/password", a.resetPassword)
+	mux.HandleFunc("DELETE /api/v1/users/{id}", a.deleteUser)
 	mux.HandleFunc("GET /api/v1/audit", a.audit)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +138,7 @@ func (a *API) page(name string) http.HandlerFunc {
 		if name == "login" {
 			templateName = "login"
 		}
-		if err := a.tmpl.ExecuteTemplate(w, templateName, map[string]string{"Page": name}); err != nil {
+		if err := a.tmpl.ExecuteTemplate(w, templateName, map[string]string{"Page": name, "Title": pageTitles[name]}); err != nil {
 			a.Logger.Error("render page", "page", name, "error", err.Error())
 		}
 	}
@@ -138,7 +167,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, r, result.Token, result.Expires)
-	writeJSON(w, http.StatusOK, userResponse(result.Username, result.Role, result.CSRF))
+	writeJSON(w, http.StatusOK, userResponse(result.Username, result.Role, result.CSRF, result.MustChangePassword))
 }
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
@@ -165,20 +194,24 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, userResponse(sess.Username, sess.Role, sess.CSRFToken))
+	writeJSON(w, http.StatusOK, userResponse(sess.Username, sess.Role, sess.CSRFToken, sess.MustChangePassword))
 }
 
 func (a *API) summary(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.require(w, r, false); !ok {
 		return
 	}
-	sum, err := reporting.LoadSummary(r.Context(), a.Store)
+	cur := a.Settings.Current()
+	sum, err := reporting.LoadSummary(r.Context(), a.Store, time.Now().Add(-cur.Retention))
 	if err != nil {
 		a.Logger.Error("summary query failed", "error", err.Error())
 		writeError(w, http.StatusInternalServerError, "The summary could not be loaded.")
 		return
 	}
-	writeJSON(w, http.StatusOK, summaryResponse(sum))
+	out := summaryResponse(sum)
+	out.Days = int(cur.Retention / (24 * time.Hour))
+	out.LogMode = cur.LogMode
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) events(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +439,13 @@ func (a *API) require(w http.ResponseWriter, r *http.Request, adminOnly bool) (s
 			return store.Session{}, false
 		}
 	}
+	if sess.MustChangePassword && !passwordChangePaths[r.URL.Path] {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":                "Choose a new password before you continue.",
+			"must_change_password": true,
+		})
+		return store.Session{}, false
+	}
 	if adminOnly && sess.Role != auth.RoleAdmin {
 		writeError(w, http.StatusForbidden, "This action is limited to an administrator.")
 		return store.Session{}, false
@@ -519,6 +559,6 @@ func pageParams(r *http.Request, fallback int) (int, int, error) {
 	return limit, offset, nil
 }
 
-func userResponse(username, role, csrf string) map[string]string {
-	return map[string]string{"username": username, "role": role, "csrf_token": csrf}
+func userResponse(username, role, csrf string, mustChange bool) map[string]any {
+	return map[string]any{"username": username, "role": role, "csrf_token": csrf, "must_change_password": mustChange}
 }

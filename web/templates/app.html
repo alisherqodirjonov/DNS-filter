@@ -4,27 +4,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if eq .Page "dashboard"}}Overview{{else if eq .Page "events"}}Events{{else if eq .Page "rules"}}Rules{{else if eq .Page "feeds"}}Feeds{{else}}Audit{{end}} · DNS Filter</title>
+  <title>{{.Title}} · DNS Filter</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="console" data-page="{{.Page}}">
   <a class="skip" href="#content">Skip to content</a>
-  <nav class="nav" aria-label="Console">
-    <a class="brand" href="/dashboard">DNS Filter</a>
-    <a href="/dashboard" {{if eq .Page "dashboard"}}aria-current="page"{{end}}>Overview</a>
-    <a href="/events" {{if eq .Page "events"}}aria-current="page"{{end}}>Events</a>
-    <a href="/rules" {{if eq .Page "rules"}}aria-current="page"{{end}}>Rules</a>
-    <a href="/feeds" {{if eq .Page "feeds"}}aria-current="page"{{end}}>Feeds</a>
-    <a href="/audit" data-admin hidden {{if eq .Page "audit"}}aria-current="page"{{end}}>Audit</a>
-  </nav>
-  <div class="workspace">
-    <header class="topbar">
-      <p id="who">Checking session…</p>
-      <button type="button" id="sign-out">Sign out</button>
-    </header>
-    <main id="content" tabindex="-1"></main>
-  </div>
+  <aside class="sidebar">
+    <a class="brand" href="/dashboard">
+      <img src="/static/favicon.svg" alt="" width="22" height="22">
+      <span>DNS Filter</span>
+    </a>
+    <nav class="nav" aria-label="Console">
+      <a href="/dashboard" {{if eq .Page "dashboard"}}aria-current="page"{{end}}>Overview</a>
+      <a href="/logs" {{if eq .Page "logs"}}aria-current="page"{{end}}>Logs</a>
+      <a href="/rules" {{if eq .Page "rules"}}aria-current="page"{{end}}>Rules</a>
+      <a href="/feeds" {{if eq .Page "feeds"}}aria-current="page"{{end}}>Feeds</a>
+      <a href="/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
+      <a href="/users" data-admin hidden {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
+      <a href="/audit" data-admin hidden {{if eq .Page "audit"}}aria-current="page"{{end}}>Audit</a>
+    </nav>
+    <div class="account">
+      <a id="who" href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Checking session…</a>
+      <button type="button" id="sign-out" class="secondary">Sign out</button>
+    </div>
+  </aside>
+  <main id="content" tabindex="-1"></main>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

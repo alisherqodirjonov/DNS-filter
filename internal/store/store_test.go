@@ -17,8 +17,8 @@ func TestOpenMigratesAndSurvivesReopen(t *testing.T) {
 	st := openStore(t, path)
 	names := tableNames(t, st)
 	want := []string{
-		"audit_events", "feed_domains", "feeds", "query_events",
-		"rules", "schema_migrations", "sessions", "users",
+		"audit_events", "feed_domains", "feeds", "query_counts", "query_events",
+		"rules", "schema_migrations", "sessions", "settings", "users",
 	}
 	for _, name := range want {
 		if !names[name] {
@@ -40,7 +40,7 @@ func TestOpenMigratesAndSurvivesReopen(t *testing.T) {
 		t.Fatalf("busy_timeout = %d", busy)
 	}
 
-	if _, err := st.CreateUser(ctx, "admin", "hash", "admin"); err != nil {
+	if _, err := st.CreateUser(ctx, "admin", "hash", "admin", false); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -64,7 +64,7 @@ func TestForeignKeyAndUniqueRule(t *testing.T) {
 		t.Fatal("expected foreign key failure")
 	}
 
-	if _, err := st.CreateUser(ctx, "ada", "hash", "guest"); err == nil {
+	if _, err := st.CreateUser(ctx, "ada", "hash", "guest", false); err == nil {
 		t.Fatal("expected role check to fail")
 	}
 
@@ -81,7 +81,7 @@ func TestSessionsRulesFeedsAndEvents(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t, filepath.Join(t.TempDir(), "dnsfilter.db"))
 
-	user, err := st.CreateUser(ctx, "ada", "hash-not-a-password", "admin")
+	user, err := st.CreateUser(ctx, "ada", "hash-not-a-password", "admin", false)
 	if err != nil {
 		t.Fatal(err)
 	}

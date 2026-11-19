@@ -14,7 +14,7 @@ func TestLoadExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(example): %v", err)
 	}
-	if cfg.DNS.ListenUDP != "127.0.0.1:5353" || cfg.DNS.ListenTCP != "127.0.0.1:5353" {
+	if cfg.DNS.ListenUDP != "127.0.0.1:5354" || cfg.DNS.ListenTCP != "127.0.0.1:5354" {
 		t.Fatalf("listen = %s / %s", cfg.DNS.ListenUDP, cfg.DNS.ListenTCP)
 	}
 	if cfg.DNS.Upstream != "1.1.1.1:53" {
