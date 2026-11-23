@@ -106,7 +106,7 @@ async function loadDashboard() {
     const recent = el("section", { className: "panel recent" });
     recent.append(panelHead("Recent queries", el("a", { href: "/logs", className: "panel-link" }, "Open the log")));
     recent.append(eventTable(data.recent_events, data.log_mode === "none"
-      ? "Logging is off, so no queries are listed. Turn it on from the Logs page."
+      ? "Logging is off, so no queries are listed. Turn it on in Settings."
       : "No queries yet. Point a test client at this resolver and they will show up here."));
     root.append(recent);
   } catch (err) {
@@ -131,8 +131,8 @@ const logModes = [
 async function loadLogs() {
   const root = start("Logs");
   root.append(el("p", { className: "lede" }, "Each row is one query this filter answered. Blocked names were not sent upstream."));
-  const modePanel = el("section", { className: "panel mode-panel" });
-  root.append(modePanel);
+  const modeLine = el("p", { className: "mode-line" }, "");
+  root.append(modeLine);
 
   const form = el("form", { className: "filters" });
   form.append(field("Domain contains", "qname", { placeholder: "example.test" }));
@@ -151,9 +151,15 @@ async function loadLogs() {
 
   try {
     const current = await api("/api/v1/settings");
-    renderModes(modePanel, current);
+    modeLine.append(
+      el("span", null, "Logging: "),
+      el("strong", null, logModes.find(([value]) => value === current.values.log_mode)?.[1] || current.values.log_mode),
+      el("span", null, " · rows are kept for " + plural(current.values.retention_days, "day") + ". "),
+      el("a", { href: "/settings" }, me.role === "admin" ? "Change in Settings" : "View in Settings"),
+    );
   } catch (err) {
-    modePanel.append(el("p", { className: "status error" }, err.message));
+    modeLine.className = "mode-line status error";
+    modeLine.textContent = err.message;
   }
   render();
 
@@ -186,46 +192,6 @@ async function loadLogs() {
       showError(status, err);
     }
   }
-}
-
-function renderModes(panel, current) {
-  clear(panel);
-  const admin = me.role === "admin";
-  const head = el("div", { className: "panel-head" });
-  head.append(el("h2", null, "What gets logged"));
-  const saved = el("span", { className: "saved", role: "status" }, "");
-  head.append(saved);
-  panel.append(head);
-  const group = el("div", { className: "modes", role: "radiogroup", "aria-label": "What gets logged" });
-  logModes.forEach(([value, title, detail]) => {
-    const option = el("label", { className: "mode" });
-    const radio = el("input", { type: "radio", name: "log_mode", value: value });
-    radio.checked = current.values.log_mode === value;
-    radio.disabled = !admin;
-    const text = el("span");
-    text.append(el("strong", null, title), el("span", null, detail));
-    option.append(radio, text);
-    group.append(option);
-    radio.addEventListener("change", async () => {
-      group.querySelectorAll("input").forEach((input) => { input.disabled = true; });
-      saved.className = "saved";
-      saved.textContent = "Saving…";
-      try {
-        const next = await api("/api/v1/settings", { method: "PUT", json: { log_mode: value } });
-        renderModes(panel, next);
-        const note = panel.querySelector(".saved");
-        note.textContent = "Saved. This applies to the next query.";
-      } catch (err) {
-        renderModes(panel, current);
-        const note = panel.querySelector(".saved");
-        note.className = "saved error";
-        note.textContent = err.message;
-      }
-    });
-  });
-  panel.append(group);
-  const foot = "Rows are kept for " + plural(current.values.retention_days, "day") + ".";
-  panel.append(el("p", { className: "panel-foot" }, admin ? foot + " Change that on the Settings page." : foot + " Only an administrator can change what gets logged."));
 }
 
 /* Rules */
@@ -454,6 +420,15 @@ function settingsForm(current) {
   upkeep.append(settingRow(current, "feed_sync_interval_hours", input("feed_sync_interval_hours", { type: "number", min: "1", max: "720" }, "hours"), "How often every feed is downloaded again."));
   form.append(upkeep);
 
+  const logging = el("section", { className: "panel" });
+  logging.append(el("h2", null, "Query log"));
+  logging.append(settingRow(current, "log_mode", select("log_mode", [
+    ["all", "All queries"],
+    ["blocked", "Blocked queries only"],
+    ["none", "Nothing — logging is off"],
+  ]), "What the Logs page keeps. The overview counts every query either way."));
+  form.append(logging);
+
   Object.keys(settingFields).forEach((key) => {
     if (form.elements[key]) form.elements[key].value = String(current.values[key]);
   });
@@ -477,6 +452,7 @@ function settingsForm(current) {
             upstream_timeout_seconds: Number(form.upstream_timeout_seconds.value),
             retention_days: Number(form.retention_days.value),
             feed_sync_interval_hours: Number(form.feed_sync_interval_hours.value),
+            log_mode: form.log_mode.value,
           },
         });
         const fresh = settingsForm(next);
@@ -498,7 +474,6 @@ function settingsForm(current) {
     foot.append(el("p", { className: "note" }, "Only an administrator can change these settings."));
   }
   form.append(foot);
-  form.append(el("p", { className: "note" }, "What gets logged is chosen on the Logs page. Currently: " + logModeName(current.values.log_mode) + "."));
   return form;
 }
 
@@ -514,7 +489,7 @@ function settingRow(current, key, control, help) {
 
 function sourceText(current, key) {
   const saved = current.saved[key];
-  if (!saved) return "From config.json";
+  if (!saved) return key === "log_mode" ? "Default" : "From config.json";
   let text = "Set by " + saved.updated_by + " on " + formatTime(saved.updated_at);
   if (String(current.file[key]) !== String(current.values[key])) text += " · config.json has " + current.file[key];
   return text;
@@ -870,11 +845,6 @@ function label(value) {
 
 function roleName(role) {
   return role === "admin" ? "Administrator" : "Analyst";
-}
-
-function logModeName(mode) {
-  const found = logModes.find(([value]) => value === mode);
-  return found ? found[1].toLowerCase() : mode;
 }
 
 function plural(count, word) {

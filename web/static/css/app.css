@@ -157,9 +157,8 @@ button, input, select { font: inherit; color: inherit; }
 
 main {
   width: 100%;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 2rem 2.5rem 3.5rem;
+  min-width: 0;
+  padding: 1.75rem 2rem 3rem;
 }
 
 main:focus { outline: none; }
@@ -504,55 +503,19 @@ td.none { color: var(--faint); }
 
 .notice span { color: var(--ink-2); }
 
-/* Logging mode */
+/* Logging line on the Logs page */
 
-.mode-panel { margin: 0 0 1rem; }
-
-.modes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.6rem;
-  padding: 1rem 1rem 0.5rem;
+.mode-line {
+  margin: -0.75rem 0 1.25rem;
+  font-size: 0.88rem;
+  color: var(--muted);
 }
 
-.mode {
-  display: flex;
-  gap: 0.6rem;
-  align-items: flex-start;
-  margin: 0;
-  padding: 0.7rem 0.8rem;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  font-size: 0.9rem;
-  font-weight: 400;
-  cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
-}
-
-.mode:hover { border-color: #bfc5bf; }
-
-.mode:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
-
-.mode:has(input:disabled) { cursor: default; }
-
-.mode input {
-  width: auto;
-  height: auto;
-  margin: 0.2rem 0 0;
-  accent-color: var(--accent);
-  box-shadow: none;
-}
-
-.mode strong { display: block; font-weight: 600; }
-
-.mode span span { display: block; margin-top: 0.15rem; font-size: 0.84rem; color: var(--muted); }
-
-.panel-foot { margin: 0; padding: 0.35rem 1rem 0.9rem; font-size: 0.85rem; color: var(--muted); }
+.mode-line strong { color: var(--ink); font-weight: 600; }
 
 /* Settings */
 
-.settings { display: grid; gap: 1rem; max-width: 880px; }
+.settings { display: grid; gap: 1rem; }
 
 .settings .note { margin: 0; }
 
@@ -563,7 +526,7 @@ td.none { color: var(--faint); }
 
 .setting {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.5rem 2rem;
   padding: 1rem;
   border-bottom: 1px solid var(--line);
@@ -687,7 +650,7 @@ td.none { color: var(--faint); }
 
   main { padding: 1.5rem 1rem 2.5rem; }
 
-  .split, .modes, .setting, .filters { grid-template-columns: 1fr; }
+  .split, .setting, .filters { grid-template-columns: 1fr; }
 
   .inline-form .wide { grid-column: auto; }
 }
