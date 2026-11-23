@@ -12,7 +12,7 @@
   <a class="skip" href="#content">Skip to content</a>
   <aside class="sidebar">
     <a class="brand" href="/dashboard">
-      <img src="/static/favicon.svg" alt="" width="22" height="22">
+      <img src="/static/favicon.svg" alt="" width="24" height="24">
       <span>DNS Filter</span>
     </a>
     <nav class="nav" aria-label="Console">
@@ -21,8 +21,9 @@
       <a href="/rules" {{if eq .Page "rules"}}aria-current="page"{{end}}>Rules</a>
       <a href="/feeds" {{if eq .Page "feeds"}}aria-current="page"{{end}}>Feeds</a>
       <a href="/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
+      <p class="nav-group" data-admin hidden>Administration</p>
       <a href="/users" data-admin hidden {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
-      <a href="/audit" data-admin hidden {{if eq .Page "audit"}}aria-current="page"{{end}}>Audit</a>
+      <a href="/audit" data-admin hidden {{if eq .Page "audit"}}aria-current="page"{{end}}>Audit log</a>
     </nav>
     <div class="account">
       <a id="who" href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Checking session…</a>

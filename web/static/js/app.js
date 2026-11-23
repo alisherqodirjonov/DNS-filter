@@ -93,20 +93,22 @@ async function loadDashboard() {
     status.remove();
     lede.textContent = "Totals for the last " + plural(data.days, "day") + ". " + loggingNote(data.log_mode);
     root.append(cards([
-      ["Queries", String(data.total)],
-      ["Allowed", String(data.allowed)],
-      ["Blocked", String(data.blocked)],
+      ["Queries", number(data.total)],
+      ["Allowed", number(data.allowed), "allowed"],
+      ["Blocked", number(data.blocked), "blocked"],
       ["Block ratio", percent(data.block_ratio)],
-      ["Feed names", String(data.feed_domains)],
+      ["Feed names", number(data.feed_domains)],
     ]));
     const split = el("div", { className: "split" });
-    split.append(countPanel("Most blocked names", data.top_blocked_domains, "qname", "Nothing blocked is in the log yet."));
-    split.append(countPanel("Clients with the most blocks", data.top_blocked_clients, "client_ip", "No blocked client is in the log yet."));
+    split.append(countPanel("Most blocked names", "Name", data.top_blocked_domains, "qname", "Nothing blocked is in the log yet."));
+    split.append(countPanel("Clients with the most blocks", "Client", data.top_blocked_clients, "client_ip", "No blocked client is in the log yet."));
     root.append(split);
-    root.append(el("h2", null, "Recent queries"));
-    root.append(eventTable(data.recent_events, data.log_mode === "none"
+    const recent = el("section", { className: "panel recent" });
+    recent.append(panelHead("Recent queries", el("a", { href: "/logs", className: "panel-link" }, "Open the log")));
+    recent.append(eventTable(data.recent_events, data.log_mode === "none"
       ? "Logging is off, so no queries are listed. Turn it on from the Logs page."
       : "No queries yet. Point a test client at this resolver and they will show up here."));
+    root.append(recent);
   } catch (err) {
     showError(status, err);
   }
@@ -135,7 +137,7 @@ async function loadLogs() {
   const form = el("form", { className: "filters" });
   form.append(field("Domain contains", "qname", { placeholder: "example.test" }));
   form.append(selectField("Decision", "decision", [["", "Any decision"], ["ALLOWED", "Allowed"], ["BLOCKED", "Blocked"], ["ERROR", "Error"]]));
-  form.append(el("button", { type: "submit" }, "Apply"));
+  form.append(el("button", { type: "submit", className: "secondary" }, "Apply filter"));
   root.append(form);
   const list = el("div");
   root.append(list);
@@ -233,6 +235,7 @@ async function loadRules() {
   root.append(el("p", { className: "note" }, "A suffix rule also covers subdomains. An allow rule forwards the name even when a deny rule or a feed would block it."));
   if (me.role === "admin") {
     const form = el("form", { className: "inline-form panel" });
+    form.append(el("h2", null, "Add a rule"));
     form.append(field("Domain", "domain", { placeholder: "example.test", required: "" }));
     form.append(selectField("Type", "rule_type", [["deny", "Deny"], ["allow", "Allow"]]));
     form.append(selectField("Match", "match_type", [["exact", "Exact name"], ["suffix", "Name and subdomains"]]));
@@ -278,7 +281,7 @@ async function loadRules() {
       return;
     }
     list.append(table(["Domain", "Type", "Match", "Description", "Added by", ""], data.rules.map((rule) => {
-      const cells = [rule.domain, label(rule.rule_type), label(rule.match_type), rule.description || "—", rule.created_by];
+      const cells = [mono(rule.domain), tag(rule.rule_type === "allow" ? "allowed" : "blocked", label(rule.rule_type)), label(rule.match_type), rule.description || "—", rule.created_by];
       if (me.role === "admin") {
         cells.push(dangerButton("Delete", "Delete the rule for " + rule.domain + "?", async () => {
           try {
@@ -314,6 +317,7 @@ async function loadFeeds() {
 
 function feedForm(list, note) {
   const form = el("form", { className: "inline-form panel" });
+  form.append(el("h2", null, "Add a feed"));
   form.append(field("Name", "name", { placeholder: "lab-list", required: "" }));
   const source = field("File path or https address", "source", { placeholder: "/srv/lists/lab.txt", required: "" });
   source.className = "wide";
@@ -367,9 +371,9 @@ async function renderFeeds(list, note, message) {
         feed.name,
         el("span", { className: "path" }, feed.source),
         feed.format,
-        tag(feed.status === "ok" ? "ok" : feed.status === "pending" ? "pending" : "error", feed.status),
-        String(feed.domains_count),
-        String(feed.rejected_count),
+        tag(feed.status === "ok" ? "ok" : feed.status === "pending" ? "pending" : "error", feedStatus(feed.status)),
+        number(feed.domains_count),
+        number(feed.rejected_count),
         feed.last_error ? formatTime(feed.last_sync_at) + " — " + feed.last_error : formatTime(feed.last_sync_at),
       ];
       if (me.role === "admin") {
@@ -527,6 +531,7 @@ async function loadUsers() {
   root.append(el("p", { className: "note" }, "Administrators can change rules, feeds, settings, and accounts. Analysts can look but not change. New accounts and reset passwords are temporary: the person picks their own at first sign-in."));
   const list = el("div");
   const form = el("form", { className: "inline-form panel" });
+  form.append(el("h2", null, "Add an account"));
   form.append(field("Username", "username", { autocomplete: "off", required: "" }));
   form.append(field("Temporary password", "password", { type: "password", autocomplete: "new-password", minlength: "8", required: "" }));
   form.append(selectField("Role", "role", [["analyst", "Analyst"], ["admin", "Administrator"]]));
@@ -738,10 +743,10 @@ function eventTable(events, empty) {
   if (!events || !events.length) return el("p", { className: "status" }, empty);
   return table(["Time", "Client", "Name", "Type", "Via", "Decision", "Answer", "Match"], events.map((event) => [
     formatTime(event.timestamp),
-    event.client_ip,
-    event.qname,
+    mono(event.client_ip),
+    mono(event.qname),
     event.qtype,
-    event.transport,
+    event.transport.toUpperCase(),
     tag(event.action.toLowerCase(), label(event.action)),
     event.rcode,
     matchText(event),
@@ -756,23 +761,34 @@ function matchText(event) {
 
 function cards(items) {
   const wrap = el("section", { className: "cards" });
-  items.forEach(([name, value]) => {
-    const card = el("article", { className: "card" });
+  items.forEach(([name, value, kind]) => {
+    const card = el("article", { className: kind ? "card " + kind : "card" });
     card.append(el("span", null, name), el("strong", null, value));
     wrap.append(card);
   });
   return wrap;
 }
 
-function countPanel(title, rows, key, empty) {
+function countPanel(title, column, rows, key, empty) {
   const panel = el("section", { className: "panel" });
-  panel.append(el("h2", null, title));
+  panel.append(panelHead(title));
   if (!rows || !rows.length) {
     panel.append(el("p", { className: "status" }, empty));
     return panel;
   }
-  panel.append(table(["Name", "Count"], rows.map((row) => [row[key], String(row.count)])));
+  panel.append(table([column, "Blocks"], rows.map((row) => [mono(row[key]), number(row.count)])));
   return panel;
+}
+
+function panelHead(title, extra) {
+  const head = el("div", { className: "panel-head" });
+  head.append(el("h2", null, title));
+  if (extra) head.append(extra);
+  return head;
+}
+
+function mono(text) {
+  return el("span", { className: "mono" }, text == null || text === "" ? "—" : String(text));
 }
 
 function table(headers, rows) {
@@ -863,6 +879,15 @@ function logModeName(mode) {
 
 function plural(count, word) {
   return count + " " + word + (count === 1 ? "" : "s");
+}
+
+function number(value) {
+  return new Intl.NumberFormat().format(Number(value || 0));
+}
+
+function feedStatus(status) {
+  const names = { ok: "OK", pending: "Pending", error: "Error" };
+  return names[status] || status;
 }
 
 function percent(value) {

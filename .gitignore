@@ -1,11 +1,20 @@
 # Build output
 /dnsfilter
 /bin/
+/dist/
 *.exe
+*.dll
+*.so
+*.dylib
 *.test
+
+# Go workspace files are per machine
+go.work
+go.work.sum
 
 # Local configuration. It is created from config.example.json on the first run.
 /config.json
+*.local.json
 
 # SQLite database and its journal files
 /data/
@@ -13,27 +22,52 @@
 *.db-wal
 *.db-shm
 *.db-journal
+*.sqlite
+*.sqlite3
 
 # Test and profiling output
 *.out
-coverage.html
+coverage.*
 *.prof
+*.pprof
 
 # Packet captures and logs
 *.pcap
 *.pcapng
 *.log
+nohup.out
 
-# Secrets
+# Secrets: keys, certificates, environment files
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Temporary and backup files
+/tmp/
+*.tmp
+*.bak
+*.orig
 
 # Editors, agents, and operating systems
 .claude/
 .cursor/
 .vscode/
 .idea/
+*.code-workspace
+.history/
 *.swp
+*.swo
 *~
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Office lock files
+~$*
+
+docs/screenshots/
